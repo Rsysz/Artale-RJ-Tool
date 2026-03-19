@@ -68,16 +68,12 @@
         // ─── Streamlit 通訊層（內聯，不依賴任何 CDN）─────────────────────────
         const Streamlit = {
             _renderCallbacks: [],
-
-            // 把資料回傳給 Python
             setComponentValue(value) {
                 window.parent.postMessage(
                     { isStreamlitMessage: true, type: "streamlit:setComponentValue", value },
                     "*"
                 );
             },
-
-            // 告訴 Streamlit iframe 高度
             setFrameHeight(height) {
                 window.parent.postMessage(
                     { isStreamlitMessage: true, type: "streamlit:setFrameHeight",
@@ -85,13 +81,9 @@
                     "*"
                 );
             },
-
-            // 註冊 render 回呼
             onRender(callback) {
                 this._renderCallbacks.push(callback);
             },
-
-            // 宣告組件已就緒，讓 Streamlit 送出第一次 render
             _ready() {
                 window.parent.postMessage(
                     { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
@@ -100,7 +92,6 @@
             }
         };
 
-        // 接收來自 Streamlit 的 render 事件
         window.addEventListener("message", (event) => {
             if (event.data.type === "streamlit:render") {
                 Streamlit._renderCallbacks.forEach(cb =>
@@ -119,20 +110,19 @@
 
         let currentRoomData = null;
         let currentBrush    = "Red";
+        let pendingSync     = false;  // 點擊後鎖定，防止舊資料從伺服器覆蓋本地
         const container = document.getElementById('board-container');
 
         function handleClick(floor, slotIdx, action, color) {
             const slot = currentRoomData[floor][slotIdx];
             if (action === "main") {
                 if (slot["main"] === currentBrush) {
-                    // 再次點擊同一格 → 取消
                     slot["main"] = null;
                 } else {
-                    // 同一層內，先清除該用戶（currentBrush）已佔用的其他格
+                    // 同一層內先清除自己的舊佔位
                     currentRoomData[floor].forEach(s => {
                         if (s["main"] === currentBrush) s["main"] = null;
                     });
-                    // 再設定新的格
                     slot["main"] = currentBrush;
                 }
             } else if (action === "exclude") {
@@ -141,6 +131,7 @@
                 else          slot["excludes"].push(color);
             }
             renderBoard();
+            pendingSync = true;  // 鎖定：等 Python 把新資料存回並送 onRender 後才解鎖
             Streamlit.setComponentValue(currentRoomData);
         }
 
@@ -190,7 +181,6 @@
             }
         }
 
-        // Streamlit 每次傳入新 props 時觸發
         Streamlit.onRender(function(event) {
             const args = event.detail.args;
             if (args.brush) currentBrush = args.brush;
@@ -198,7 +188,20 @@
             const incomingStr = JSON.stringify(args.room_data);
             const currentStr  = JSON.stringify(currentRoomData);
 
-            if (currentRoomData === null || incomingStr !== currentStr) {
+            if (currentRoomData === null) {
+                // 第一次載入，直接套用
+                currentRoomData = JSON.parse(incomingStr);
+                renderBoard();
+            } else if (pendingSync) {
+                // 剛剛有本地點擊還未確認：
+                // 若伺服器送回的資料已經包含我們的點擊（表示成功存回），解鎖
+                // 若送回的還是舊資料（計時器搶先），忽略這次 render 保留本地狀態
+                if (incomingStr === currentStr) {
+                    pendingSync = false;  // 伺服器確認了，解鎖
+                }
+                // 不論如何都不覆寫 currentRoomData，保護本地剛點的內容
+            } else if (incomingStr !== currentStr) {
+                // 正常同步：來自其他用戶的更新，套用
                 currentRoomData = JSON.parse(incomingStr);
                 renderBoard();
             }
@@ -206,7 +209,6 @@
             Streamlit.setFrameHeight(document.body.scrollHeight);
         });
 
-        // 宣告就緒，觸發第一次 render（必須在所有監聽器註冊完後才呼叫）
         Streamlit._ready();
     </script>
 </body>
