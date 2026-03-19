@@ -124,7 +124,17 @@
         function handleClick(floor, slotIdx, action, color) {
             const slot = currentRoomData[floor][slotIdx];
             if (action === "main") {
-                slot["main"] = (slot["main"] === currentBrush) ? null : currentBrush;
+                if (slot["main"] === currentBrush) {
+                    // 再次點擊同一格 → 取消
+                    slot["main"] = null;
+                } else {
+                    // 同一層內，先清除該用戶（currentBrush）已佔用的其他格
+                    currentRoomData[floor].forEach(s => {
+                        if (s["main"] === currentBrush) s["main"] = null;
+                    });
+                    // 再設定新的格
+                    slot["main"] = currentBrush;
+                }
             } else if (action === "exclude") {
                 const idx = slot["excludes"].indexOf(color);
                 if (idx > -1) slot["excludes"].splice(idx, 1);
