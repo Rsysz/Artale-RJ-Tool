@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Open Sans', sans-serif;
+            background: transparent;
+        }
+        #brush-row {
+            display: flex;
+            gap: 8px;
+            padding: 2px 0;
+        }
+        .brush-btn {
+            flex: 1;
+            height: 42px;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 700;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            user-select: none;
+        }
+
+        /* 無人持有：灰底，hover 預覽顏色 */
+        .brush-btn.free {
+            background: #2a2a2a;
+            color: #888;
+            border-color: #444;
+        }
+        .brush-btn.free:hover {
+            color: #fff;
+            filter: brightness(1.4);
+        }
+
+        /* 我持有：亮起完整顏色 + 白框 + 發光 */
+        .brush-btn.mine {
+            color: #fff;
+            border-color: #fff;
+            font-weight: 900;
+        }
+
+        /* 他人持有：顏色半透明，不可點 */
+        .brush-btn.taken {
+            color: #fff;
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div id="brush-row"></div>
+
+    <script>
+        // ─── Streamlit 通訊層 ─────────────────────────────────────────────────
+        const Streamlit = {
+            _renderCallbacks: [],
+            setComponentValue(value) {
+                window.parent.postMessage(
+                    { isStreamlitMessage: true, type: "streamlit:setComponentValue", value },
+                    "*"
+                );
+            },
+            setFrameHeight(height) {
+                window.parent.postMessage(
+                    { isStreamlitMessage: true, type: "streamlit:setFrameHeight",
+                      height: height != null ? height : document.body.scrollHeight },
+                    "*"
+                );
+            },
+            onRender(cb) { this._renderCallbacks.push(cb); },
+            _ready() {
+                window.parent.postMessage(
+                    { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+                    "*"
+                );
+            }
+        };
+        window.addEventListener("message", (e) => {
+            if (e.data.type === "streamlit:render") {
+                Streamlit._renderCallbacks.forEach(cb =>
+                    cb({ detail: { args: e.data.args } })
+                );
+            }
+        });
+
+        // ─── 筆刷按鈕邏輯 ────────────────────────────────────────────────────
+        const COLOR_CONFIG = {
+            "Red":    { hex: "#FF4B4B", icon: "🔴" },
+            "Blue":   { hex: "#1C83E1", icon: "🔵" },
+            "Green":  { hex: "#28B62C", icon: "🟢" },
+            "Yellow": { hex: "#FFD700", icon: "🟡" }
+        };
+
+        const row = document.getElementById('brush-row');
+
+        function renderButtons(claims, sessionId) {
+            row.innerHTML = "";
+            for (const [name, info] of Object.entries(COLOR_CONFIG)) {
+                const owner   = claims[name];
+                const isMine  = (owner === sessionId);
+                const isTaken = (owner !== null && owner !== undefined && !isMine);
+
+                const btn = document.createElement('div');
+                btn.className = 'brush-btn';
+
+                if (isMine) {
+                    btn.classList.add('mine');
+                    btn.style.background   = info.hex;
+                    btn.style.borderColor  = '#fff';
+                    btn.style.boxShadow    = `0 0 14px ${info.hex}`;
+                    btn.innerHTML = `🎯 ${info.icon} ${name}`;
+                    btn.onclick = () => Streamlit.setComponentValue(name);
+                } else if (isTaken) {
+                    btn.classList.add('taken');
+                    btn.style.background  = info.hex;
+                    btn.style.borderColor = info.hex;
+                    btn.innerHTML = `🔒 ${info.icon} ${name}`;
+                    // 不加 onclick，不可點
+                } else {
+                    btn.classList.add('free');
+                    btn.style.setProperty('--hover-bg', info.hex);
+                    btn.innerHTML = `${info.icon} ${name}`;
+                    btn.onmouseenter = () => {
+                        btn.style.background   = info.hex;
+                        btn.style.borderColor  = info.hex;
+                        btn.style.color        = '#fff';
+                    };
+                    btn.onmouseleave = () => {
+                        btn.style.background  = '';
+                        btn.style.borderColor = '';
+                        btn.style.color       = '';
+                    };
+                    btn.onclick = () => Streamlit.setComponentValue(name);
+                }
+
+                row.appendChild(btn);
+            }
+            Streamlit.setFrameHeight(document.body.scrollHeight);
+        }
+
+        Streamlit.onRender(function(event) {
+            const { claims, session_id } = event.detail.args;
+            renderButtons(claims, session_id);
+        });
+
+        Streamlit._ready();
+    </script>
+</body>
+</html>
