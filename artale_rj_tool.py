@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import uuid
+import time
 from rjpq_component import rjpq_tactics_board
 from brush_component import brush_selector
 
@@ -13,6 +14,9 @@ COLOR_CONFIG = {
     "Green":  {"hex": "#28B62C", "icon": "🟢"},
     "Yellow": {"hex": "#FFD700", "icon": "🟡"}
 }
+
+# 超過此秒數沒有心跳，視為已離線，自動釋放顏色
+HEARTBEAT_TIMEOUT = 5
 
 # --- 1. 全域共享記憶體 ---
 @st.cache_resource
@@ -53,7 +57,32 @@ def get_my_color(room_id, session_id):
             return c
     return None
 
-# --- 3. 初始化 Session State ---
+# --- 3. 心跳：偵測離線 session 並釋放其顏色 ---
+def update_heartbeat(room_id, session_id):
+    """更新此 session 的最後活躍時間"""
+    if room_id not in ALL_ROOMS:
+        return
+    if "heartbeats" not in ALL_ROOMS[room_id]:
+        ALL_ROOMS[room_id]["heartbeats"] = {}
+    ALL_ROOMS[room_id]["heartbeats"][session_id] = time.time()
+
+def cleanup_stale_sessions(room_id):
+    """掃描所有 session，超過 HEARTBEAT_TIMEOUT 秒沒心跳就釋放其顏色"""
+    if room_id not in ALL_ROOMS:
+        return
+    room = ALL_ROOMS[room_id]
+    if "heartbeats" not in room:
+        return
+    now = time.time()
+    stale = [
+        sid for sid, ts in room["heartbeats"].items()
+        if now - ts > HEARTBEAT_TIMEOUT
+    ]
+    for sid in stale:
+        release_color(room_id, sid)
+        del room["heartbeats"][sid]
+
+# --- 4. 初始化 Session State ---
 if 'session_id' not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if 'brush' not in st.session_state:
@@ -63,7 +92,7 @@ if 'last_json_save' not in st.session_state:
 if 'board_version' not in st.session_state:
     st.session_state.board_version = 0
 
-# --- 4. 登入邏輯 ---
+# --- 5. 登入邏輯 ---
 if 'room_id' not in st.session_state:
     st.title("🛡️ RJPQ 戰術系統")
     tab_login, tab_create = st.tabs(["🚪 進入房間", "➕ 創立新房間"])
@@ -88,13 +117,14 @@ if 'room_id' not in st.session_state:
                 ALL_ROOMS[new_id] = {
                     "password":     new_pwd,
                     "data":         get_reset_data(),
-                    "color_claims": {c: None for c in COLOR_CONFIG}
+                    "color_claims": {c: None for c in COLOR_CONFIG},
+                    "heartbeats":   {}
                 }
                 st.session_state.room_id = new_id
                 st.rerun()
     st.stop()
 
-# --- 5. 防護：伺服器重啟後 ALL_ROOMS 清空 ---
+# --- 6. 防護：伺服器重啟後 ALL_ROOMS 清空 ---
 if st.session_state.room_id not in ALL_ROOMS:
     del st.session_state.room_id
     st.session_state.brush = None
@@ -107,8 +137,10 @@ session_id = st.session_state.session_id
 
 if "color_claims" not in room_info:
     room_info["color_claims"] = {c: None for c in COLOR_CONFIG}
+if "heartbeats" not in room_info:
+    room_info["heartbeats"] = {}
 
-# 同步：若此 session 已持有顏色但 brush 尚未設定（例如剛重連），補回來
+# 同步：若此 session 已持有顏色但 brush 尚未設定，補回來
 if st.session_state.brush is None:
     owned = get_my_color(room_id, session_id)
     if owned:
@@ -117,7 +149,7 @@ if st.session_state.brush is None:
 brush  = st.session_state.brush
 claims = get_claims(room_id)
 
-# --- 6. 頂部欄 ---
+# --- 7. 頂部欄 ---
 top_col1, top_col2 = st.columns([4, 1])
 with top_col1:
     brush_display = COLOR_CONFIG[brush]["icon"] if brush else "⬜ 未選擇"
@@ -132,17 +164,15 @@ with top_col2:
             st.session_state.board_version += 1
             st.rerun()
 
-# --- 7. 筆刷選擇組件 ---
+# --- 8. 筆刷選擇組件 ---
 selected_brush = brush_selector(
     claims=claims,
     session_id=session_id,
     key="brush_selector"
 )
 
-# 用戶點擊了某個筆刷
 if selected_brush is not None and isinstance(selected_brush, str):
     owner = claims.get(selected_brush)
-    # 只處理「點自己已持有的（toggle off 不做任何事）」或「點空閒的」
     if owner != session_id:
         if try_claim_color(room_id, selected_brush, session_id):
             st.session_state.brush = selected_brush
@@ -150,11 +180,17 @@ if selected_brush is not None and isinstance(selected_brush, str):
 
 st.divider()
 
-# --- 8. 戰術板（含多人同步）---
+# --- 9. 戰術板（含多人同步 + 心跳）---
 @st.fragment(run_every=0.5)
 def sync_board():
     if room_id not in ALL_ROOMS:
         return
+
+    # 更新心跳（每次 fragment 執行都算一次存活信號）
+    update_heartbeat(room_id, session_id)
+
+    # 清理離線 session 的顏色佔用
+    cleanup_stale_sessions(room_id)
 
     latest_data   = ALL_ROOMS[room_id]["data"]
     current_brush = st.session_state.brush or "Red"
